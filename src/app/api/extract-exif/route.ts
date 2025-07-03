@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
       console.log(`📊 [${requestId}] Found ${Object.keys(tags).length} EXIF tags`);
       
       // Log some key tags for debugging
-      const keyTags = ['Make', 'Model', 'DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'];
+      const keyTags = ['Make', 'Model', 'DateTimeOriginal', 'GPSLatitude', 'GPSLongitude', 'GPSLatitudeRef', 'GPSLongitudeRef'];
       const foundKeyTags: any = {};
       keyTags.forEach(tag => {
         if (tags[tag]) foundKeyTags[tag] = tags[tag];
@@ -109,7 +109,6 @@ export async function POST(request: NextRequest) {
         FileSize: file.size,
         FileType: file.type.split('/')[1] || 'unknown',
         MIMEType: file.type,
-        // Try to get dimensions using Sharp as fallback
       };
     }
 
@@ -143,17 +142,67 @@ export async function POST(request: NextRequest) {
     const processedTags = processExifData(tags);
     console.log(`✅ [${requestId}] Processed ${processedTags.length} tags`);
 
-    // Step 8: Extract GPS data
+    // Step 8: Extract GPS data (IMPROVED GPS EXTRACTION)
     console.log(`🗺️ [${requestId}] Step 8: Checking for GPS data...`);
     let gpsData = undefined;
-    if (tags.GPSLatitude && tags.GPSLongitude) {
+    
+    // Function to convert GPS coordinates to decimal
+    const convertGPSToDecimal = (coord: any, ref: string): number | null => {
+      if (typeof coord === 'number') {
+        // Already in decimal format
+        return (ref === 'S' || ref === 'W') ? -coord : coord;
+      }
+      
+      if (typeof coord === 'string') {
+        // Try to parse string coordinate
+        const num = parseFloat(coord);
+        if (!isNaN(num)) {
+          return (ref === 'S' || ref === 'W') ? -num : num;
+        }
+      }
+      
+      // Handle DMS format if it's an array or object
+      if (Array.isArray(coord) && coord.length >= 3) {
+        const [deg, min, sec] = coord.map(Number);
+        if (!isNaN(deg) && !isNaN(min) && !isNaN(sec)) {
+          let decimal = deg + min / 60 + sec / 3600;
+          return (ref === 'S' || ref === 'W') ? -decimal : decimal;
+        }
+      }
+      
+      return null;
+    };
+    
+    // Check multiple possible GPS tag formats
+    const gpsLat = tags.GPSLatitude || tags.gpsLatitude;
+    const gpsLon = tags.GPSLongitude || tags.gpsLongitude;
+    const gpsLatRef = tags.GPSLatitudeRef || tags.gpsLatitudeRef || 'N';
+    const gpsLonRef = tags.GPSLongitudeRef || tags.gpsLongitudeRef || 'E';
+    const gpsAlt = tags.GPSAltitude || tags.gpsAltitude;
+    
+    console.log(`🔍 [${requestId}] GPS raw data:`, {
+      lat: gpsLat,
+      lon: gpsLon,
+      latRef: gpsLatRef,
+      lonRef: gpsLonRef,
+      alt: gpsAlt
+    });
+    
+    if (gpsLat !== undefined && gpsLon !== undefined) {
       try {
-        gpsData = {
-          latitude: typeof tags.GPSLatitude === 'number' ? tags.GPSLatitude : parseFloat(String(tags.GPSLatitude)),
-          longitude: typeof tags.GPSLongitude === 'number' ? tags.GPSLongitude : parseFloat(String(tags.GPSLongitude)),
-          altitude: tags.GPSAltitude ? (typeof tags.GPSAltitude === 'number' ? tags.GPSAltitude : parseFloat(String(tags.GPSAltitude))) : undefined,
-        };
-        console.log(`📍 [${requestId}] GPS data found:`, gpsData);
+        const latitude = convertGPSToDecimal(gpsLat, gpsLatRef);
+        const longitude = convertGPSToDecimal(gpsLon, gpsLonRef);
+        
+        if (latitude !== null && longitude !== null) {
+          gpsData = {
+            latitude,
+            longitude,
+            altitude: gpsAlt ? (typeof gpsAlt === 'number' ? gpsAlt : parseFloat(String(gpsAlt))) : undefined,
+          };
+          console.log(`📍 [${requestId}] GPS data successfully extracted:`, gpsData);
+        } else {
+          console.log(`❌ [${requestId}] GPS coordinate conversion failed`);
+        }
       } catch (gpsError) {
         console.error(`❌ [${requestId}] GPS parsing failed:`, gpsError);
         gpsData = undefined;
