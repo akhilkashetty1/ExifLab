@@ -16,8 +16,8 @@ import { FileUpload } from "@/components/FileUpload";
 import { LoadingSpinner } from "@/components/LoadingSpinner";
 import { 
   Puzzle, Trophy, Timer, RotateCcw, Shuffle, 
-  Play, Pause, HelpCircle, CheckCircle, Target,
-  Zap
+  Play, HelpCircle, CheckCircle, Target,
+  Zap, Smartphone
 } from "lucide-react";
 import { PuzzlePiece, PuzzleState } from "@/types/exif";
 import { getImagePreviewUrl, shuffleArray } from "@/lib/utils";
@@ -37,7 +37,23 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
   const [showHint, setShowHint] = useState(false);
   const [draggedPiece, setDraggedPiece] = useState<number | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [touchState, setTouchState] = useState<{
+    selectedPiece: number | null;
+    isDragging: boolean;
+  }>({ selectedPiece: null, isDragging: false });
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Detect mobile device
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 768 || 'ontouchstart' in window);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   // Update selected file when uploadedImage prop changes
   useEffect(() => {
@@ -136,6 +152,7 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
     setGameTimer(0);
     setShowHint(false);
     setDraggedPiece(null);
+    setTouchState({ selectedPiece: null, isDragging: false });
   };
 
   const shufflePieces = () => {
@@ -159,27 +176,54 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
     return pieces.every(piece => piece.currentPosition === piece.correctPosition);
   };
 
+  // Desktop drag and drop handlers
   const handleDragStart = (e: React.DragEvent, pieceIndex: number) => {
+    if (isMobile) return;
     setDraggedPiece(pieceIndex);
     e.dataTransfer.effectAllowed = 'move';
   };
 
   const handleDragOver = (e: React.DragEvent) => {
+    if (isMobile) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
   };
 
   const handleDrop = (e: React.DragEvent, targetIndex: number) => {
+    if (isMobile) return;
     e.preventDefault();
     if (draggedPiece === null || !puzzleState) return;
 
-    // Swap pieces
-    const newPieces = [...puzzleState.pieces];
-    const draggedPos = newPieces[draggedPiece].currentPosition;
-    const targetPos = newPieces[targetIndex].currentPosition;
+    swapPieces(draggedPiece, targetIndex);
+    setDraggedPiece(null);
+  };
 
-    newPieces[draggedPiece].currentPosition = targetPos;
-    newPieces[targetIndex].currentPosition = draggedPos;
+  // Mobile touch handlers
+  const handleTouchStart = (e: React.TouchEvent, pieceIndex: number) => {
+    e.preventDefault();
+    if (touchState.selectedPiece === null) {
+      // First touch - select piece
+      setTouchState({ selectedPiece: pieceIndex, isDragging: false });
+    } else if (touchState.selectedPiece === pieceIndex) {
+      // Same piece touched - deselect
+      setTouchState({ selectedPiece: null, isDragging: false });
+    } else {
+      // Different piece - swap and deselect
+      swapPieces(touchState.selectedPiece, pieceIndex);
+      setTouchState({ selectedPiece: null, isDragging: false });
+    }
+  };
+
+  // Universal swap function
+  const swapPieces = (piece1Index: number, piece2Index: number) => {
+    if (!puzzleState) return;
+
+    const newPieces = [...puzzleState.pieces];
+    const piece1Pos = newPieces[piece1Index].currentPosition;
+    const piece2Pos = newPieces[piece2Index].currentPosition;
+
+    newPieces[piece1Index].currentPosition = piece2Pos;
+    newPieces[piece2Index].currentPosition = piece1Pos;
 
     const isComplete = checkCompletion(newPieces);
     
@@ -193,8 +237,6 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
     if (isComplete) {
       setGameStarted(false);
     }
-
-    setDraggedPiece(null);
   };
 
   const getPieceAtPosition = (position: number): PuzzlePiece | undefined => {
@@ -223,7 +265,7 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
         <Alert className="bg-purple-500/10 border-purple-500/20">
           <HelpCircle className="h-4 w-4" />
           <AlertDescription>
-            <strong>How to play:</strong> Drag and drop puzzle pieces to rearrange them and 
+            <strong>How to play:</strong> {isMobile ? 'Tap pieces to select and swap them' : 'Drag and drop puzzle pieces'} to rearrange them and 
             recreate the original image. Try to complete it in the fewest moves!
           </AlertDescription>
         </Alert>
@@ -240,6 +282,7 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
             <CardTitle className="flex items-center gap-2">
               <Target className="w-5 h-5" />
               Puzzle Configuration
+              {isMobile && <Badge variant="secondary" className="bg-blue-500/20 text-blue-400"><Smartphone className="w-3 h-3 mr-1" />Touch Mode</Badge>}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -371,6 +414,12 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
               <RotateCcw className="w-4 h-4 mr-2" />
               New Game
             </Button>
+            {isMobile && (
+              <Badge variant="secondary" className="bg-blue-500/20 text-blue-400">
+                <Smartphone className="w-3 h-3 mr-1" />
+                Tap to select/swap
+              </Badge>
+            )}
           </div>
 
           {/* Reference Image */}
@@ -389,45 +438,71 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
             </Card>
           )}
 
-          {/* Puzzle Grid */}
+          {/* Puzzle Grid - NO GAPS */}
           <Card className="bg-card/50 backdrop-blur">
             <CardContent className="p-6">
               <div 
-                className="grid gap-1 mx-auto w-fit"
+                className="grid mx-auto w-fit border-2 border-border/50 rounded-lg overflow-hidden"
                 style={{ 
                   gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
-                  maxWidth: '500px'
+                  maxWidth: '500px',
+                  gap: '0px' // NO GAPS!
                 }}
               >
                 {Array.from({ length: gridSize * gridSize }, (_, index) => {
                   const piece = getPieceAtPosition(index);
+                  const isSelected = isMobile && touchState.selectedPiece === piece?.id;
+                  const isCorrectPosition = showHint && piece?.correctPosition === index;
+                  const isWrongPosition = showHint && piece?.correctPosition !== index;
+                  
                   return (
                     <div
                       key={index}
                       className={cn(
-                        "aspect-square border-2 border-border/50 rounded-lg overflow-hidden transition-all duration-200",
-                        "hover:scale-105 hover:border-primary/50 cursor-pointer",
+                        "aspect-square border-0 transition-all duration-200 relative",
+                        !isMobile && "hover:scale-105 cursor-grab active:cursor-grabbing",
+                        isMobile && "cursor-pointer active:scale-95",
                         draggedPiece === piece?.id && "opacity-50 scale-95",
-                        showHint && piece?.correctPosition === index && "ring-2 ring-green-500/50",
-                        showHint && piece?.correctPosition !== index && "ring-2 ring-red-500/50"
+                        isSelected && "ring-4 ring-blue-500 z-10",
+                        isCorrectPosition && "ring-2 ring-green-500",
+                        isWrongPosition && "ring-2 ring-red-500"
                       )}
                       style={{ width: '100px', height: '100px' }}
-                      onDragOver={handleDragOver}
-                      onDrop={(e) => handleDrop(e, piece?.id || 0)}
+                      onDragOver={!isMobile ? handleDragOver : undefined}
+                      onDrop={!isMobile ? (e) => handleDrop(e, piece?.id || 0) : undefined}
+                      onTouchStart={isMobile ? (e) => handleTouchStart(e, piece?.id || 0) : undefined}
                     >
                       {piece && (
                         <img
                           src={piece.imageData}
                           alt={`Puzzle piece ${piece.id}`}
-                          className="w-full h-full object-cover"
-                          draggable
-                          onDragStart={(e) => handleDragStart(e, piece.id)}
+                          className="w-full h-full object-cover select-none"
+                          draggable={!isMobile}
+                          onDragStart={!isMobile ? (e) => handleDragStart(e, piece.id) : undefined}
+                          style={{ 
+                            pointerEvents: isMobile ? 'none' : 'auto',
+                            userSelect: 'none',
+                            WebkitUserSelect: 'none'
+                          }}
                         />
+                      )}
+                      {isSelected && (
+                        <div className="absolute inset-0 bg-blue-500/20 flex items-center justify-center">
+                          <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse" />
+                        </div>
                       )}
                     </div>
                   );
                 })}
               </div>
+              
+              {/* Mobile Instructions */}
+              {isMobile && !puzzleState.isComplete && (
+                <div className="mt-4 text-center text-sm text-muted-foreground">
+                  <Smartphone className="w-4 h-4 inline mr-2" />
+                  Tap a piece to select it, then tap another piece to swap them
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -445,4 +520,4 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
       )}
     </div>
   );
-}
+}                 
