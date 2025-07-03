@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ExifViewer } from "@/components/ExifViewer";
 import { ImageConverter } from "@/components/ImageConverter";
 import { ImagePuzzle } from "@/components/ImagePuzzle";
-import { Eye, RefreshCw, Puzzle, Camera } from "lucide-react";
+import { Eye, RefreshCw, Puzzle, Camera, Sparkles, Zap, ArrowRight, Clock } from "lucide-react";
 
 export default function Home() {
   const [uploadedImage, setUploadedImage] = useState<File | null>(null);
@@ -14,7 +14,7 @@ export default function Home() {
   return (
     <div className="container mx-auto px-4 py-8">
       {/* Hero Section */}
-      <div className="text-center mb-12">
+      <div className="text-center mb-8">
         <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-gradient-to-br from-purple-500 to-cyan-500 mb-6">
           <Camera className="w-8 h-8 text-white" />
         </div>
@@ -25,6 +25,74 @@ export default function Home() {
           Discover hidden metadata in your images with our advanced analysis tool. 
           Privacy-focused, secure, and blazingly fast.
         </p>
+      </div>
+
+      {/* Interactive Flagship Feature Banner */}
+      <div className="relative max-w-4xl mx-auto mb-12 group">
+        <Card className="relative overflow-hidden bg-gradient-to-br from-purple-500/10 via-cyan-500/10 to-purple-500/10 border border-purple-500/20 backdrop-blur hover:border-purple-500/40 transition-all duration-500">
+          {/* Animated background gradient */}
+          <div className="absolute inset-0 bg-gradient-to-r from-purple-500/5 via-cyan-500/5 to-purple-500/5 animate-pulse" />
+          
+          {/* Floating particles animation */}
+          <div className="absolute inset-0 overflow-hidden">
+            <div className="absolute top-1/4 left-1/4 w-2 h-2 bg-purple-400/30 rounded-full animate-bounce" style={{ animationDelay: '0s', animationDuration: '3s' }} />
+            <div className="absolute top-3/4 right-1/4 w-1.5 h-1.5 bg-cyan-400/30 rounded-full animate-bounce" style={{ animationDelay: '1s', animationDuration: '2.5s' }} />
+            <div className="absolute top-1/2 right-1/3 w-1 h-1 bg-purple-300/40 rounded-full animate-bounce" style={{ animationDelay: '2s', animationDuration: '4s' }} />
+            <div className="absolute bottom-1/3 left-1/3 w-1.5 h-1.5 bg-cyan-300/30 rounded-full animate-bounce" style={{ animationDelay: '0.5s', animationDuration: '3.5s' }} />
+          </div>
+
+          <CardContent className="relative p-8 text-center">
+            <div className="flex items-center justify-center gap-3 mb-4">
+              <div className="relative">
+                <Sparkles className="w-8 h-8 text-purple-400 animate-pulse" />
+                <div className="absolute inset-0 w-8 h-8 text-cyan-400 animate-ping opacity-30">
+                  <Sparkles className="w-8 h-8" />
+                </div>
+              </div>
+              <span className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+                Coming Soon
+              </span>
+              <div className="relative">
+                <Zap className="w-8 h-8 text-cyan-400 animate-pulse" />
+                <div className="absolute inset-0 w-8 h-8 text-purple-400 animate-ping opacity-30">
+                  <Zap className="w-8 h-8" />
+                </div>
+              </div>
+            </div>
+
+            <h3 className="text-3xl md:text-4xl font-bold mb-3 bg-gradient-to-r from-purple-300 via-cyan-300 to-purple-300 bg-clip-text text-transparent">
+              AI-Powered Metadata Cleaner
+            </h3>
+            
+            <p className="text-lg text-muted-foreground mb-6 max-w-2xl mx-auto leading-relaxed">
+              Revolutionary AI technology that automatically detects and removes sensitive metadata while preserving image quality. 
+              <span className="text-purple-300 font-medium"> One-click privacy protection</span> for all your photos.
+            </p>
+
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6">
+              <div className="flex items-center gap-2 text-sm bg-purple-500/10 px-4 py-2 rounded-full border border-purple-500/20">
+                <Clock className="w-4 h-4 text-purple-400" />
+                <span className="text-purple-300">Beta launching Q2 2025</span>
+              </div>
+              
+              <div className="flex items-center gap-2 text-sm bg-cyan-500/10 px-4 py-2 rounded-full border border-cyan-500/20">
+                <Zap className="w-4 h-4 text-cyan-400" />
+                <span className="text-cyan-300">10x faster than manual removal</span>
+              </div>
+            </div>
+
+            <div className="inline-flex items-center gap-2 text-purple-300 hover:text-purple-200 transition-colors cursor-pointer group-hover:gap-3 transition-all duration-300">
+              <span className="font-medium">Stay tuned for early access</span>
+              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+            </div>
+
+            {/* Subtle glow effect */}
+            <div className="absolute inset-0 rounded-lg bg-gradient-to-r from-purple-500/5 to-cyan-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+          </CardContent>
+        </Card>
+
+        {/* Outer glow effect */}
+        <div className="absolute inset-0 -z-10 bg-gradient-to-r from-purple-500/10 to-cyan-500/10 blur-xl rounded-lg opacity-50 group-hover:opacity-75 transition-opacity duration-500" />
       </div>
 
       {/* Main Application Tabs */}
