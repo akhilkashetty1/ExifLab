@@ -101,26 +101,54 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
 
     setLoading(true);
     try {
-      const formData = new FormData();
-      formData.append('image', selectedFile);
-      formData.append('gridSize', gridSize.toString());
-
-      const response = await fetch('/api/slice-image', {
-        method: 'POST',
-        body: formData,
+      // Create puzzle pieces client-side instead of relying on API
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = URL.createObjectURL(selectedFile);
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to create puzzle');
-      }
+      const pieceSize = 300; // Larger piece size for better quality
+      canvas.width = pieceSize * gridSize;
+      canvas.height = pieceSize * gridSize;
 
-      const result = await response.json();
-      const pieces: PuzzlePiece[] = result.pieces.map((pieceData: string, index: number) => ({
-        id: index,
-        currentPosition: index,
-        correctPosition: index,
-        imageData: pieceData,
-      }));
+      // Draw the image to fit the canvas
+      ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      // Create puzzle pieces
+      const pieces: PuzzlePiece[] = [];
+      for (let row = 0; row < gridSize; row++) {
+        for (let col = 0; col < gridSize; col++) {
+          const pieceCanvas = document.createElement('canvas');
+          const pieceCtx = pieceCanvas.getContext('2d');
+          pieceCanvas.width = pieceSize;
+          pieceCanvas.height = pieceSize;
+
+          // Extract piece from main canvas
+          const imageData = ctx?.getImageData(
+            col * pieceSize, 
+            row * pieceSize, 
+            pieceSize, 
+            pieceSize
+          );
+          
+          if (imageData && pieceCtx) {
+            pieceCtx.putImageData(imageData, 0, 0);
+            
+            const pieceIndex = row * gridSize + col;
+            pieces.push({
+              id: pieceIndex,
+              currentPosition: pieceIndex,
+              correctPosition: pieceIndex,
+              imageData: pieceCanvas.toDataURL('image/jpeg', 0.9),
+            });
+          }
+        }
+      }
 
       // Shuffle the pieces
       const shuffledPositions = shuffleArray([...Array(pieces.length).keys()]);
@@ -139,8 +167,12 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
 
       setGameStarted(true);
       setGameTimer(0);
+      
+      // Clean up
+      URL.revokeObjectURL(img.src);
     } catch (error) {
       console.error('Error creating puzzle:', error);
+      alert('Failed to create puzzle. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -242,6 +274,23 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
   const getPieceAtPosition = (position: number): PuzzlePiece | undefined => {
     return puzzleState?.pieces.find(piece => piece.currentPosition === position);
   };
+
+  // Calculate responsive puzzle size
+  const getPuzzleSize = () => {
+    if (isMobile) {
+      return {
+        containerSize: Math.min(window.innerWidth - 32, 400),
+        pieceSize: Math.min(window.innerWidth - 32, 400) / gridSize
+      };
+    } else {
+      return {
+        containerSize: Math.min(600, window.innerWidth * 0.6),
+        pieceSize: Math.min(600, window.innerWidth * 0.6) / gridSize
+      };
+    }
+  };
+
+  const puzzleSize = getPuzzleSize();
 
   if (!selectedFile) {
     return (
@@ -438,15 +487,16 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
             </Card>
           )}
 
-          {/* Puzzle Grid - NO GAPS */}
+          {/* Puzzle Grid - Responsive Size */}
           <Card className="bg-card/50 backdrop-blur">
             <CardContent className="p-6">
               <div 
-                className="grid mx-auto w-fit border-2 border-border/50 rounded-lg overflow-hidden"
+                className="grid mx-auto border-2 border-border/50 rounded-lg overflow-hidden"
                 style={{ 
                   gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
-                  maxWidth: '500px',
-                  gap: '0px' // NO GAPS!
+                  width: `${puzzleSize.containerSize}px`,
+                  height: `${puzzleSize.containerSize}px`,
+                  gap: '0px'
                 }}
               >
                 {Array.from({ length: gridSize * gridSize }, (_, index) => {
@@ -467,7 +517,10 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
                         isCorrectPosition && "ring-2 ring-green-500",
                         isWrongPosition && "ring-2 ring-red-500"
                       )}
-                      style={{ width: '100px', height: '100px' }}
+                      style={{ 
+                        width: `${puzzleSize.pieceSize}px`, 
+                        height: `${puzzleSize.pieceSize}px` 
+                      }}
                       onDragOver={!isMobile ? handleDragOver : undefined}
                       onDrop={!isMobile ? (e) => handleDrop(e, piece?.id || 0) : undefined}
                       onTouchStart={isMobile ? (e) => handleTouchStart(e, piece?.id || 0) : undefined}
@@ -520,4 +573,4 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
       )}
     </div>
   );
-}                 
+}
