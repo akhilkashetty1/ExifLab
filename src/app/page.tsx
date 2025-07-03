@@ -61,28 +61,28 @@ export default function Home() {
             </div>
 
             <h3 className="text-3xl md:text-4xl font-bold mb-3 bg-gradient-to-r from-purple-300 via-cyan-300 to-purple-300 bg-clip-text text-transparent">
-              AI-Powered Metadata Cleaner
+              Share-Safe Image Scanner
             </h3>
             
             <p className="text-lg text-muted-foreground mb-6 max-w-2xl mx-auto leading-relaxed">
-              Revolutionary AI technology that automatically detects and removes sensitive metadata while preserving image quality. 
-              <span className="text-purple-300 font-medium"> One-click privacy protection</span> for all your photos.
+              Know before you share! Instantly detect hidden GPS coordinates, personal data, and AI-generated content in your photos. 
+              <span className="text-purple-300 font-medium"> Get your privacy grade in 2 seconds</span> and share with confidence.
             </p>
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6">
-              <div className="flex items-center gap-2 text-sm bg-purple-500/10 px-4 py-2 rounded-full border border-purple-500/20">
-                <Clock className="w-4 h-4 text-purple-400" />
-                <span className="text-purple-300">Beta launching Q2 2025</span>
+              <div className="flex items-center gap-2 text-sm bg-red-500/10 px-4 py-2 rounded-full border border-red-500/20">
+                <Clock className="w-4 h-4 text-red-400" />
+                <span className="text-red-300">87% of photos leak location data</span>
               </div>
               
               <div className="flex items-center gap-2 text-sm bg-cyan-500/10 px-4 py-2 rounded-full border border-cyan-500/20">
                 <Zap className="w-4 h-4 text-cyan-400" />
-                <span className="text-cyan-300">10x faster than manual removal</span>
+                <span className="text-cyan-300">AI detection + privacy grading</span>
               </div>
             </div>
 
             <div className="inline-flex items-center gap-2 text-purple-300 hover:text-purple-200 transition-colors cursor-pointer group-hover:gap-3 transition-all duration-300">
-              <span className="font-medium">Stay tuned for early access</span>
+              <span className="font-medium">Join 10,000+ beta users</span>
               <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
             </div>
 
