@@ -2,105 +2,151 @@ import { NextRequest, NextResponse } from 'next/server';
 import { processExifData } from '@/lib/exif-categories';
 import { ProcessedExifData } from '@/types/exif';
 
-// Pure JavaScript EXIF parser - no external dependencies needed
-class ExifParser {
+// Robust EXIF parser based on research findings
+class RobustExifParser {
   private buffer: Buffer;
+  private view: DataView;
   private offset: number = 0;
+  private tiffStart: number = 0;
+  private littleEndian: boolean = false;
 
   constructor(buffer: Buffer) {
     this.buffer = buffer;
+    this.view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
   }
 
-  private readUint16(littleEndian: boolean = false): number {
-    const value = littleEndian 
-      ? this.buffer.readUInt16LE(this.offset)
-      : this.buffer.readUInt16BE(this.offset);
-    this.offset += 2;
-    return value;
+  private checkBounds(offset: number, length: number = 1): boolean {
+    return offset >= 0 && (offset + length) <= this.buffer.length;
   }
 
-  private readUint32(littleEndian: boolean = false): number {
-    const value = littleEndian 
-      ? this.buffer.readUInt32LE(this.offset)
-      : this.buffer.readUInt32BE(this.offset);
-    this.offset += 4;
-    return value;
+  private safeReadUint8(offset: number): number | null {
+    if (!this.checkBounds(offset, 1)) return null;
+    return this.view.getUint8(offset);
   }
 
-  private readString(length: number): string {
-    const value = this.buffer.subarray(this.offset, this.offset + length).toString('ascii');
-    this.offset += length;
-    return value.replace(/\0/g, ''); // Remove null terminators
+  private safeReadUint16(offset: number, littleEndian: boolean = false): number | null {
+    if (!this.checkBounds(offset, 2)) return null;
+    return this.view.getUint16(offset, littleEndian);
   }
 
-  private readRational(littleEndian: boolean = false): number {
-    const numerator = this.readUint32(littleEndian);
-    const denominator = this.readUint32(littleEndian);
-    return denominator !== 0 ? numerator / denominator : 0;
+  private safeReadUint32(offset: number, littleEndian: boolean = false): number | null {
+    if (!this.checkBounds(offset, 4)) return null;
+    return this.view.getUint32(offset, littleEndian);
   }
 
-  private convertDMSToDecimal(degrees: number, minutes: number, seconds: number): number {
-    return degrees + minutes / 60 + seconds / 3600;
+  private safeReadString(offset: number, length: number): string | null {
+    if (!this.checkBounds(offset, length)) return null;
+    let result = '';
+    for (let i = 0; i < length; i++) {
+      const byte = this.safeReadUint8(offset + i);
+      if (byte === null) return null;
+      if (byte === 0) break; // Null terminator
+      result += String.fromCharCode(byte);
+    }
+    return result;
+  }
+
+  private readRational(offset: number): number | null {
+    const numerator = this.safeReadUint32(offset, this.littleEndian);
+    const denominator = this.safeReadUint32(offset + 4, this.littleEndian);
+    if (numerator === null || denominator === null || denominator === 0) return null;
+    return numerator / denominator;
+  }
+
+  private readSignedRational(offset: number): number | null {
+    if (!this.checkBounds(offset, 8)) return null;
+    const numerator = this.view.getInt32(offset, this.littleEndian);
+    const denominator = this.view.getInt32(offset + 4, this.littleEndian);
+    if (denominator === 0) return null;
+    return numerator / denominator;
   }
 
   public parse(): Record<string, any> {
     const tags: Record<string, any> = {};
     
     try {
-      // Check for JPEG format
-      if (this.buffer[0] !== 0xFF || this.buffer[1] !== 0xD8) {
-        console.log('Not a JPEG file, trying alternative parsing...');
-        return this.parseAlternativeFormats();
+      // Check for JPEG SOI marker
+      if (!this.checkBounds(0, 2) || this.safeReadUint16(0) !== 0xFFD8) {
+        console.log('Not a JPEG file');
+        return tags;
       }
 
-      // Find EXIF marker
-      this.offset = 2;
+      // Find APP1 marker containing EXIF
+      let currentOffset = 2;
       let foundExif = false;
 
-      while (this.offset < this.buffer.length - 1) {
-        if (this.buffer[this.offset] === 0xFF && this.buffer[this.offset + 1] === 0xE1) {
-          this.offset += 2;
-          const segmentLength = this.readUint16();
-          const exifHeader = this.readString(4);
-          
-          if (exifHeader === 'Exif') {
-            this.offset += 2; // Skip null bytes
+      while (currentOffset < this.buffer.length - 1) {
+        if (!this.checkBounds(currentOffset, 4)) break;
+
+        const marker = this.safeReadUint16(currentOffset);
+        if (marker === null) break;
+
+        if ((marker & 0xFF00) !== 0xFF00) break; // Not a valid marker
+
+        if (marker === 0xFFE1) { // APP1 marker
+          const segmentLength = this.safeReadUint16(currentOffset + 2);
+          if (segmentLength === null || segmentLength < 14) {
+            currentOffset += 4;
+            continue;
+          }
+
+          // Check for "Exif\0\0" header
+          const exifHeader = this.safeReadString(currentOffset + 4, 6);
+          if (exifHeader === 'Exif\0\0') {
+            this.tiffStart = currentOffset + 10;
             foundExif = true;
             break;
-          } else {
-            this.offset += segmentLength - 6;
           }
+
+          currentOffset += 2 + segmentLength;
+        } else if (marker === 0xFFDA) { // Start of Scan - no more metadata
+          break;
         } else {
-          this.offset++;
+          // Skip this segment
+          const segmentLength = this.safeReadUint16(currentOffset + 2);
+          if (segmentLength === null) break;
+          currentOffset += 2 + segmentLength;
         }
       }
 
       if (!foundExif) {
-        console.log('No EXIF data found in JPEG');
+        console.log('No EXIF data found');
         return tags;
       }
 
       // Parse TIFF header
-      const tiffStart = this.offset;
-      const byteOrder = this.readString(2);
-      const littleEndian = byteOrder === 'II';
-      
-      if (byteOrder !== 'II' && byteOrder !== 'MM') {
-        console.log('Invalid TIFF header');
+      if (!this.checkBounds(this.tiffStart, 8)) {
+        console.log('Invalid TIFF header bounds');
         return tags;
       }
 
-      const magic = this.readUint16(littleEndian);
+      // Check byte order
+      const byteOrder = this.safeReadUint16(this.tiffStart);
+      if (byteOrder === 0x4949) {
+        this.littleEndian = true; // Intel format
+      } else if (byteOrder === 0x4D4D) {
+        this.littleEndian = false; // Motorola format
+      } else {
+        console.log('Invalid byte order');
+        return tags;
+      }
+
+      // Check TIFF magic number
+      const magic = this.safeReadUint16(this.tiffStart + 2, this.littleEndian);
       if (magic !== 42) {
         console.log('Invalid TIFF magic number');
         return tags;
       }
 
-      const ifdOffset = this.readUint32(littleEndian);
-      this.offset = tiffStart + ifdOffset;
+      // Get offset to first IFD
+      const ifd0Offset = this.safeReadUint32(this.tiffStart + 4, this.littleEndian);
+      if (ifd0Offset === null) {
+        console.log('Invalid IFD0 offset');
+        return tags;
+      }
 
-      // Parse IFD (Image File Directory)
-      this.parseIFD(tags, tiffStart, littleEndian);
+      // Parse IFD0
+      this.parseIFD(this.tiffStart + ifd0Offset, tags, 'IFD0');
 
     } catch (error) {
       console.error('EXIF parsing error:', error);
@@ -109,128 +155,181 @@ class ExifParser {
     return tags;
   }
 
-  private parseIFD(tags: Record<string, any>, tiffStart: number, littleEndian: boolean): void {
-    const entryCount = this.readUint16(littleEndian);
-    
+  private parseIFD(ifdOffset: number, tags: Record<string, any>, ifdName: string): void {
+    if (!this.checkBounds(ifdOffset, 2)) {
+      console.log(`Invalid ${ifdName} offset: ${ifdOffset}`);
+      return;
+    }
+
+    const entryCount = this.safeReadUint16(ifdOffset, this.littleEndian);
+    if (entryCount === null || entryCount > 100) { // Sanity check
+      console.log(`Invalid entry count in ${ifdName}: ${entryCount}`);
+      return;
+    }
+
+    console.log(`Parsing ${ifdName} with ${entryCount} entries`);
+
+    let currentOffset = ifdOffset + 2;
+
     for (let i = 0; i < entryCount; i++) {
-      const tag = this.readUint16(littleEndian);
-      const type = this.readUint16(littleEndian);
-      const count = this.readUint32(littleEndian);
-      const valueOffset = this.readUint32(littleEndian);
+      if (!this.checkBounds(currentOffset, 12)) {
+        console.log(`Entry ${i} out of bounds in ${ifdName}`);
+        break;
+      }
+
+      const tag = this.safeReadUint16(currentOffset, this.littleEndian);
+      const type = this.safeReadUint16(currentOffset + 2, this.littleEndian);
+      const count = this.safeReadUint32(currentOffset + 4, this.littleEndian);
+      const valueOffset = this.safeReadUint32(currentOffset + 8, this.littleEndian);
+
+      if (tag === null || type === null || count === null || valueOffset === null) {
+        currentOffset += 12;
+        continue;
+      }
 
       const tagInfo = this.getTagInfo(tag);
       if (tagInfo) {
-        const value = this.readTagValue(type, count, valueOffset, tiffStart, littleEndian);
-        tags[tagInfo.name] = value;
-        
-        // Handle GPS sub-IFD
-        if (tag === 0x8825 && typeof value === 'number') {
-          this.parseGPSData(tags, tiffStart + value, littleEndian);
+        const value = this.readTagValue(type, count, valueOffset, currentOffset + 8);
+        if (value !== null) {
+          tags[tagInfo.name] = value;
+          
+          // Handle special tags that point to sub-IFDs
+          if (tag === 0x8769 && typeof value === 'number') { // ExifOffset
+            this.parseIFD(this.tiffStart + value, tags, 'ExifIFD');
+          } else if (tag === 0x8825 && typeof value === 'number') { // GPSOffset
+            this.parseIFD(this.tiffStart + value, tags, 'GPSIFD');
+          }
         }
       }
+
+      currentOffset += 12;
     }
 
     // Check for next IFD
-    const nextIFDOffset = this.readUint32(littleEndian);
-    if (nextIFDOffset !== 0) {
-      this.offset = tiffStart + nextIFDOffset;
-      this.parseIFD(tags, tiffStart, littleEndian);
-    }
-  }
-
-  private parseGPSData(tags: Record<string, any>, gpsOffset: number, littleEndian: boolean): void {
-    const currentOffset = this.offset;
-    this.offset = gpsOffset;
-    
-    try {
-      const entryCount = this.readUint16(littleEndian);
-      
-      for (let i = 0; i < entryCount; i++) {
-        const tag = this.readUint16(littleEndian);
-        const type = this.readUint16(littleEndian);
-        const count = this.readUint32(littleEndian);
-        const valueOffset = this.readUint32(littleEndian);
-
-        const gpsTagInfo = this.getGPSTagInfo(tag);
-        if (gpsTagInfo) {
-          const value = this.readTagValue(type, count, valueOffset, gpsOffset - this.offset + currentOffset, littleEndian);
-          tags[gpsTagInfo.name] = value;
-        }
+    if (this.checkBounds(currentOffset, 4)) {
+      const nextIFDOffset = this.safeReadUint32(currentOffset, this.littleEndian);
+      if (nextIFDOffset !== null && nextIFDOffset !== 0) {
+        this.parseIFD(this.tiffStart + nextIFDOffset, tags, 'IFD1');
       }
-    } catch (error) {
-      console.error('GPS parsing error:', error);
     }
-    
-    this.offset = currentOffset;
   }
 
-  private readTagValue(type: number, count: number, valueOffset: number, tiffStart: number, littleEndian: boolean): any {
-    const currentOffset = this.offset;
-    
-    // If value fits in 4 bytes, it's stored directly in valueOffset
-    const dataSize = this.getTypeSize(type) * count;
-    if (dataSize <= 4) {
-      this.offset = currentOffset - 4; // Go back to value field
-      return this.readValueByType(type, count, littleEndian);
+  private readTagValue(type: number, count: number, valueOffset: number, valueFieldOffset: number): any {
+    const typeSize = this.getTypeSize(type);
+    if (typeSize === 0) return null;
+
+    const totalSize = typeSize * count;
+    let dataOffset: number;
+
+    // If data fits in 4 bytes, it's stored in the value field itself
+    if (totalSize <= 4) {
+      dataOffset = valueFieldOffset;
     } else {
-      this.offset = tiffStart + valueOffset;
-      const value = this.readValueByType(type, count, littleEndian);
-      this.offset = currentOffset;
-      return value;
+      dataOffset = this.tiffStart + valueOffset;
+      if (!this.checkBounds(dataOffset, totalSize)) {
+        console.log(`Data offset out of bounds: ${dataOffset}, size: ${totalSize}`);
+        return null;
+      }
     }
+
+    return this.readValueByType(type, count, dataOffset);
   }
 
-  private readValueByType(type: number, count: number, littleEndian: boolean): any {
+  private readValueByType(type: number, count: number, offset: number): any {
+    if (count === 0) return null;
+
     switch (type) {
       case 1: // BYTE
-        return count === 1 ? this.buffer[this.offset++] : Array.from(this.buffer.subarray(this.offset, this.offset += count));
-      
+        if (count === 1) {
+          return this.safeReadUint8(offset);
+        } else {
+          const result = [];
+          for (let i = 0; i < count; i++) {
+            const value = this.safeReadUint8(offset + i);
+            if (value === null) break;
+            result.push(value);
+          }
+          return result.length > 0 ? result : null;
+        }
+
       case 2: // ASCII
-        return this.readString(count);
-      
+        return this.safeReadString(offset, count);
+
       case 3: // SHORT
-        return count === 1 ? this.readUint16(littleEndian) : 
-               Array.from({length: count}, () => this.readUint16(littleEndian));
-      
+        if (count === 1) {
+          return this.safeReadUint16(offset, this.littleEndian);
+        } else {
+          const result = [];
+          for (let i = 0; i < count; i++) {
+            const value = this.safeReadUint16(offset + i * 2, this.littleEndian);
+            if (value === null) break;
+            result.push(value);
+          }
+          return result.length > 0 ? result : null;
+        }
+
       case 4: // LONG
-        return count === 1 ? this.readUint32(littleEndian) : 
-               Array.from({length: count}, () => this.readUint32(littleEndian));
-      
+        if (count === 1) {
+          return this.safeReadUint32(offset, this.littleEndian);
+        } else {
+          const result = [];
+          for (let i = 0; i < count; i++) {
+            const value = this.safeReadUint32(offset + i * 4, this.littleEndian);
+            if (value === null) break;
+            result.push(value);
+          }
+          return result.length > 0 ? result : null;
+        }
+
       case 5: // RATIONAL
         if (count === 1) {
-          return this.readRational(littleEndian);
+          return this.readRational(offset);
         } else {
-          return Array.from({length: count}, () => this.readRational(littleEndian));
+          const result = [];
+          for (let i = 0; i < count; i++) {
+            const value = this.readRational(offset + i * 8);
+            if (value === null) break;
+            result.push(value);
+          }
+          return result.length > 0 ? result : null;
         }
-      
+
       case 7: // UNDEFINED
-        return this.buffer.subarray(this.offset, this.offset += count);
-      
+        if (!this.checkBounds(offset, count)) return null;
+        return Array.from(this.buffer.subarray(offset, offset + count));
+
       case 9: // SLONG
-        const value = littleEndian ? this.buffer.readInt32LE(this.offset) : this.buffer.readInt32BE(this.offset);
-        this.offset += 4;
-        return value;
-      
+        if (!this.checkBounds(offset, 4)) return null;
+        return this.view.getInt32(offset, this.littleEndian);
+
       case 10: // SRATIONAL
-        const num = littleEndian ? this.buffer.readInt32LE(this.offset) : this.buffer.readInt32BE(this.offset);
-        this.offset += 4;
-        const den = littleEndian ? this.buffer.readInt32LE(this.offset) : this.buffer.readInt32BE(this.offset);
-        this.offset += 4;
-        return den !== 0 ? num / den : 0;
-      
+        if (count === 1) {
+          return this.readSignedRational(offset);
+        } else {
+          const result = [];
+          for (let i = 0; i < count; i++) {
+            const value = this.readSignedRational(offset + i * 8);
+            if (value === null) break;
+            result.push(value);
+          }
+          return result.length > 0 ? result : null;
+        }
+
       default:
-        this.offset += this.getTypeSize(type) * count;
+        console.log(`Unsupported type: ${type}`);
         return null;
     }
   }
 
   private getTypeSize(type: number): number {
     const sizes = [0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8];
-    return sizes[type] || 1;
+    return sizes[type] || 0;
   }
 
   private getTagInfo(tag: number): { name: string } | null {
+    // Comprehensive tag mapping including GPS tags
     const tags: Record<number, string> = {
+      // Basic TIFF tags
       0x010F: 'Make',
       0x0110: 'Model',
       0x0112: 'Orientation',
@@ -240,28 +339,21 @@ class ExifParser {
       0x0131: 'Software',
       0x0132: 'DateTime',
       0x013B: 'Artist',
-      0x013E: 'WhitePoint',
-      0x013F: 'PrimaryChromaticities',
-      0x0211: 'YCbCrCoefficients',
-      0x0213: 'YCbCrPositioning',
-      0x0214: 'ReferenceBlackWhite',
       0x8298: 'Copyright',
-      0x8769: 'ExifIFDPointer',
-      0x8825: 'GPSIFDPointer',
+      0x8769: 'ExifOffset',
+      0x8825: 'GPSOffset',
+
+      // EXIF tags
       0x829A: 'ExposureTime',
       0x829D: 'FNumber',
       0x8827: 'ISO',
       0x9000: 'ExifVersion',
       0x9003: 'DateTimeOriginal',
       0x9004: 'DateTimeDigitized',
-      0x9101: 'ComponentsConfiguration',
-      0x9102: 'CompressedBitsPerPixel',
       0x9201: 'ShutterSpeedValue',
       0x9202: 'ApertureValue',
-      0x9203: 'BrightnessValue',
       0x9204: 'ExposureBiasValue',
       0x9205: 'MaxApertureValue',
-      0x9206: 'SubjectDistance',
       0x9207: 'MeteringMode',
       0x9208: 'LightSource',
       0x9209: 'Flash',
@@ -271,40 +363,17 @@ class ExifParser {
       0xA001: 'ColorSpace',
       0xA002: 'ExifImageWidth',
       0xA003: 'ExifImageHeight',
-      0xA005: 'InteroperabilityIFDPointer',
-      0xA20E: 'FocalPlaneXResolution',
-      0xA20F: 'FocalPlaneYResolution',
-      0xA210: 'FocalPlaneResolutionUnit',
-      0xA215: 'ExposureIndex',
-      0xA217: 'SensingMethod',
-      0xA300: 'FileSource',
-      0xA301: 'SceneType',
-      0xA302: 'CFAPattern',
-      0xA401: 'CustomRendered',
       0xA402: 'ExposureMode',
       0xA403: 'WhiteBalance',
-      0xA404: 'DigitalZoomRatio',
       0xA405: 'FocalLengthIn35mmFormat',
-      0xA406: 'SceneCaptureType',
-      0xA407: 'GainControl',
-      0xA408: 'Contrast',
-      0xA409: 'Saturation',
-      0xA40A: 'Sharpness',
-      0xA40C: 'SubjectDistanceRange',
-      0xA420: 'ImageUniqueID',
       0xA430: 'CameraOwnerName',
       0xA431: 'BodySerialNumber',
       0xA432: 'LensSpecification',
       0xA433: 'LensMake',
       0xA434: 'LensModel',
       0xA435: 'LensSerialNumber',
-    };
 
-    return tags[tag] ? { name: tags[tag] } : null;
-  }
-
-  private getGPSTagInfo(tag: number): { name: string } | null {
-    const gpsTags: Record<number, string> = {
+      // GPS tags
       0x0000: 'GPSVersionID',
       0x0001: 'GPSLatitudeRef',
       0x0002: 'GPSLatitude',
@@ -328,37 +397,11 @@ class ExifParser {
       0x0014: 'GPSDestLatitude',
       0x0015: 'GPSDestLongitudeRef',
       0x0016: 'GPSDestLongitude',
-      0x0017: 'GPSDestBearingRef',
-      0x0018: 'GPSDestBearing',
-      0x0019: 'GPSDestDistanceRef',
-      0x001A: 'GPSDestDistance',
-      0x001B: 'GPSProcessingMethod',
-      0x001C: 'GPSAreaInformation',
       0x001D: 'GPSDateStamp',
       0x001E: 'GPSDifferential',
     };
 
-    return gpsTags[tag] ? { name: gpsTags[tag] } : null;
-  }
-
-  private parseAlternativeFormats(): Record<string, any> {
-    // Basic fallback for non-JPEG formats
-    const tags: Record<string, any> = {};
-    
-    // Try to detect PNG
-    if (this.buffer.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') {
-      tags.FileType = 'PNG';
-      // PNG doesn't typically have EXIF, but could have text chunks
-    }
-    
-    // Try to detect TIFF
-    if (this.buffer.subarray(0, 2).toString('ascii') === 'II' || 
-        this.buffer.subarray(0, 2).toString('ascii') === 'MM') {
-      tags.FileType = 'TIFF';
-      // Could try to parse TIFF EXIF here
-    }
-
-    return tags;
+    return tags[tag] ? { name: tags[tag] } : null;
   }
 }
 
@@ -366,12 +409,10 @@ export async function POST(request: NextRequest) {
   const startTime = Date.now();
   const requestId = Math.random().toString(36).substr(2, 9);
   
-  console.log(`🚀 [${requestId}] === PURE JS EXIF API CALLED ===`);
-  console.log(`📅 [${requestId}] Timestamp: ${new Date().toISOString()}`);
+  console.log(`🚀 [${requestId}] === ROBUST EXIF API CALLED ===`);
   
   try {
-    // Step 1: Parse form data
-    console.log(`📝 [${requestId}] Step 1: Parsing form data...`);
+    // Parse form data
     const formData = await request.formData();
     const file = formData.get('image') as File;
     
@@ -382,13 +423,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log(`📁 [${requestId}] File details:`, {
-      name: file.name,
-      size: file.size,
-      type: file.type,
-    });
+    console.log(`📁 [${requestId}] File: ${file.name}, ${file.size} bytes, ${file.type}`);
 
-    // Step 2: Validate file
     if (!file.type.startsWith('image/')) {
       return NextResponse.json(
         { error: 'File must be an image', requestId },
@@ -396,21 +432,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Step 3: Convert to buffer
-    console.log(`🔄 [${requestId}] Step 3: Converting file to buffer...`);
+    // Convert to buffer
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
     console.log(`✅ [${requestId}] Buffer created - size: ${buffer.length} bytes`);
 
-    // Step 4: Parse EXIF with pure JavaScript
-    console.log(`🔧 [${requestId}] Step 4: Parsing EXIF with pure JavaScript...`);
-    const parser = new ExifParser(buffer);
+    // Parse EXIF with robust parser
+    console.log(`🔧 [${requestId}] Parsing EXIF with robust parser...`);
+    const parser = new RobustExifParser(buffer);
     const tags = parser.parse();
-    console.log(`✅ [${requestId}] Pure JS EXIF extraction completed!`);
-    console.log(`📊 [${requestId}] Found ${Object.keys(tags).length} EXIF tags`);
+    console.log(`✅ [${requestId}] EXIF parsing completed! Found ${Object.keys(tags).length} tags`);
 
-    // Step 5: Get image dimensions with Sharp (if available) or basic detection
-    console.log(`📏 [${requestId}] Step 5: Getting image dimensions...`);
+    // Log found tags for debugging
+    const foundTags = Object.keys(tags);
+    console.log(`🏷️ [${requestId}] Found tags:`, foundTags);
+
+    // Get image dimensions with Sharp
     let imageWidth = 0;
     let imageHeight = 0;
     let format = file.type.split('/')[1] || 'unknown';
@@ -421,14 +458,13 @@ export async function POST(request: NextRequest) {
       imageWidth = metadata.width || 0;
       imageHeight = metadata.height || 0;
       format = metadata.format || format;
-      console.log(`📐 [${requestId}] Sharp metadata: ${imageWidth}x${imageHeight}, format: ${format}`);
     } catch (sharpError) {
       console.log(`⚠️ [${requestId}] Sharp not available, using EXIF dimensions`);
       imageWidth = tags.ExifImageWidth || tags.ImageWidth || 0;
       imageHeight = tags.ExifImageHeight || tags.ImageHeight || 0;
     }
 
-    // Add basic file info to tags
+    // Add basic file info
     tags.FileName = file.name;
     tags.FileSize = file.size;
     tags.FileType = format;
@@ -436,13 +472,11 @@ export async function POST(request: NextRequest) {
     if (imageWidth) tags.ImageWidth = imageWidth;
     if (imageHeight) tags.ImageHeight = imageHeight;
 
-    // Step 6: Process EXIF data
-    console.log(`⚙️ [${requestId}] Step 6: Processing EXIF data...`);
+    // Process EXIF data
     const processedTags = processExifData(tags);
     console.log(`✅ [${requestId}] Processed ${processedTags.length} tags`);
 
-    // Step 7: Extract GPS data with improved logic
-    console.log(`🗺️ [${requestId}] Step 7: Extracting GPS data...`);
+    // Extract GPS data
     let gpsData = undefined;
 
     const convertGPSToDecimal = (coord: any, ref: string): number | null => {
@@ -497,9 +531,11 @@ export async function POST(request: NextRequest) {
         };
         console.log(`📍 [${requestId}] GPS data successfully extracted:`, gpsData);
       }
+    } else {
+      console.log(`📍 [${requestId}] No GPS coordinates found`);
     }
 
-    // Step 8: Prepare response
+    // Prepare response
     const result: ProcessedExifData = {
       tags: processedTags,
       imageInfo: {
