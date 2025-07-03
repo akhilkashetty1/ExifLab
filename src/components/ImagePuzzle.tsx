@@ -278,14 +278,18 @@ export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
   // Calculate responsive puzzle size
   const getPuzzleSize = () => {
     if (isMobile) {
+      // Mobile: smaller, more compact size that fits well in mobile UI
+      const maxMobileSize = Math.min(window.innerWidth - 48, 320); // Even smaller for mobile
       return {
-        containerSize: Math.min(window.innerWidth - 32, 400),
-        pieceSize: Math.min(window.innerWidth - 32, 400) / gridSize
+        containerSize: maxMobileSize,
+        pieceSize: maxMobileSize / gridSize
       };
     } else {
+      // Desktop: larger size for better visibility and interaction
+      const maxDesktopSize = Math.min(600, window.innerWidth * 0.6);
       return {
-        containerSize: Math.min(600, window.innerWidth * 0.6),
-        pieceSize: Math.min(600, window.innerWidth * 0.6) / gridSize
+        containerSize: maxDesktopSize,
+        pieceSize: maxDesktopSize / gridSize
       };
     }
   };
