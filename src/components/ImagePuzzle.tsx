@@ -1,0 +1,448 @@
+"use client";
+
+import { useState, useCallback, useEffect, useRef } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { FileUpload } from "@/components/FileUpload";
+import { LoadingSpinner } from "@/components/LoadingSpinner";
+import { 
+  Puzzle, Trophy, Timer, RotateCcw, Shuffle, 
+  Play, Pause, HelpCircle, CheckCircle, Target,
+  Zap
+} from "lucide-react";
+import { PuzzlePiece, PuzzleState } from "@/types/exif";
+import { getImagePreviewUrl, shuffleArray } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+
+interface ImagePuzzleProps {
+  uploadedImage: File | null;
+}
+
+export function ImagePuzzle({ uploadedImage }: ImagePuzzleProps) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(uploadedImage);
+  const [puzzleState, setPuzzleState] = useState<PuzzleState | null>(null);
+  const [gridSize, setGridSize] = useState<number>(3);
+  const [loading, setLoading] = useState(false);
+  const [gameStarted, setGameStarted] = useState(false);
+  const [gameTimer, setGameTimer] = useState(0);
+  const [showHint, setShowHint] = useState(false);
+  const [draggedPiece, setDraggedPiece] = useState<number | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Update selected file when uploadedImage prop changes
+  useEffect(() => {
+    if (uploadedImage && uploadedImage !== selectedFile) {
+      setSelectedFile(uploadedImage);
+      const previewUrl = getImagePreviewUrl(uploadedImage);
+      setImagePreview(previewUrl);
+    }
+  }, [uploadedImage, selectedFile]);
+
+  // Game timer effect
+  useEffect(() => {
+    if (gameStarted && puzzleState && !puzzleState.isComplete) {
+      timerRef.current = setInterval(() => {
+        setGameTimer(prev => prev + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    }
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [gameStarted, puzzleState]);
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const handleFileUpload = useCallback((file: File) => {
+    setSelectedFile(file);
+    const previewUrl = getImagePreviewUrl(file);
+    setImagePreview(previewUrl);
+    resetGame();
+  }, []);
+
+  const createPuzzle = async () => {
+    if (!selectedFile) return;
+
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('image', selectedFile);
+      formData.append('gridSize', gridSize.toString());
+
+      const response = await fetch('/api/slice-image', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create puzzle');
+      }
+
+      const result = await response.json();
+      const pieces: PuzzlePiece[] = result.pieces.map((pieceData: string, index: number) => ({
+        id: index,
+        currentPosition: index,
+        correctPosition: index,
+        imageData: pieceData,
+      }));
+
+      // Shuffle the pieces
+      const shuffledPositions = shuffleArray([...Array(pieces.length).keys()]);
+      const shuffledPieces = pieces.map((piece, index) => ({
+        ...piece,
+        currentPosition: shuffledPositions[index],
+      }));
+
+      setPuzzleState({
+        pieces: shuffledPieces,
+        isComplete: false,
+        moves: 0,
+        timeElapsed: 0,
+        gridSize,
+      });
+
+      setGameStarted(true);
+      setGameTimer(0);
+    } catch (error) {
+      console.error('Error creating puzzle:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetGame = () => {
+    setPuzzleState(null);
+    setGameStarted(false);
+    setGameTimer(0);
+    setShowHint(false);
+    setDraggedPiece(null);
+  };
+
+  const shufflePieces = () => {
+    if (!puzzleState) return;
+
+    const shuffledPositions = shuffleArray([...Array(puzzleState.pieces.length).keys()]);
+    const shuffledPieces = puzzleState.pieces.map((piece, index) => ({
+      ...piece,
+      currentPosition: shuffledPositions[index],
+    }));
+
+    setPuzzleState({
+      ...puzzleState,
+      pieces: shuffledPieces,
+      moves: puzzleState.moves + 1,
+      isComplete: false,
+    });
+  };
+
+  const checkCompletion = (pieces: PuzzlePiece[]): boolean => {
+    return pieces.every(piece => piece.currentPosition === piece.correctPosition);
+  };
+
+  const handleDragStart = (e: React.DragEvent, pieceIndex: number) => {
+    setDraggedPiece(pieceIndex);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    if (draggedPiece === null || !puzzleState) return;
+
+    // Swap pieces
+    const newPieces = [...puzzleState.pieces];
+    const draggedPos = newPieces[draggedPiece].currentPosition;
+    const targetPos = newPieces[targetIndex].currentPosition;
+
+    newPieces[draggedPiece].currentPosition = targetPos;
+    newPieces[targetIndex].currentPosition = draggedPos;
+
+    const isComplete = checkCompletion(newPieces);
+    
+    setPuzzleState({
+      ...puzzleState,
+      pieces: newPieces,
+      moves: puzzleState.moves + 1,
+      isComplete,
+    });
+
+    if (isComplete) {
+      setGameStarted(false);
+    }
+
+    setDraggedPiece(null);
+  };
+
+  const getPieceAtPosition = (position: number): PuzzlePiece | undefined => {
+    return puzzleState?.pieces.find(piece => piece.currentPosition === position);
+  };
+
+  if (!selectedFile) {
+    return (
+      <div className="space-y-6">
+        <div className="text-center">
+          <div className="mx-auto w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center mb-4">
+            <Puzzle className="w-8 h-8 text-white" />
+          </div>
+          <h2 className="text-2xl font-bold mb-2">Image Puzzle Game</h2>
+          <p className="text-muted-foreground mb-6">
+            Turn your images into fun sliding puzzles! Upload an image to start playing.
+          </p>
+        </div>
+        
+        <FileUpload 
+          onFileUpload={handleFileUpload}
+          acceptedTypes={["image/*"]}
+          maxSize={50 * 1024 * 1024}
+        />
+        
+        <Alert className="bg-purple-500/10 border-purple-500/20">
+          <HelpCircle className="h-4 w-4" />
+          <AlertDescription>
+            <strong>How to play:</strong> Drag and drop puzzle pieces to rearrange them and 
+            recreate the original image. Try to complete it in the fewest moves!
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Game Setup */}
+      {!puzzleState && (
+        <Card className="bg-card/50 backdrop-blur">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Target className="w-5 h-5" />
+              Puzzle Configuration
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div>
+                {imagePreview && (
+                  <div className="relative">
+                    <img 
+                      src={imagePreview} 
+                      alt="Puzzle source"
+                      className="w-full h-64 object-contain rounded-lg bg-muted"
+                    />
+                    <Badge className="absolute top-2 right-2 bg-black/80">
+                      Source Image
+                    </Badge>
+                  </div>
+                )}
+              </div>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Difficulty Level</label>
+                  <Select value={gridSize.toString()} onValueChange={(value) => setGridSize(parseInt(value))}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select difficulty" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="3">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary" className="bg-green-500/20 text-green-400">Easy</Badge>
+                          <span>3x3 (9 pieces)</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="4">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary" className="bg-yellow-500/20 text-yellow-400">Medium</Badge>
+                          <span>4x4 (16 pieces)</span>
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="5">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary" className="bg-red-500/20 text-red-400">Hard</Badge>
+                          <span>5x5 (25 pieces)</span>
+                        </div>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <Button 
+                  onClick={createPuzzle} 
+                  disabled={loading}
+                  className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
+                  size="lg"
+                >
+                  {loading ? (
+                    <>
+                      <LoadingSpinner size="sm" />
+                      Creating Puzzle...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-5 h-5 mr-2" />
+                      Start Puzzle Game
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Game Interface */}
+      {puzzleState && (
+        <>
+          {/* Game Stats */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Card className="bg-card/50 backdrop-blur">
+              <CardContent className="p-4 text-center">
+                <Timer className="w-6 h-6 mx-auto mb-2 text-blue-400" />
+                <div className="text-2xl font-bold">{formatTime(gameTimer)}</div>
+                <div className="text-xs text-muted-foreground">Time</div>
+              </CardContent>
+            </Card>
+            
+            <Card className="bg-card/50 backdrop-blur">
+              <CardContent className="p-4 text-center">
+                <Zap className="w-6 h-6 mx-auto mb-2 text-orange-400" />
+                <div className="text-2xl font-bold">{puzzleState.moves}</div>
+                <div className="text-xs text-muted-foreground">Moves</div>
+              </CardContent>
+            </Card>
+            
+            <Card className="bg-card/50 backdrop-blur">
+              <CardContent className="p-4 text-center">
+                <Puzzle className="w-6 h-6 mx-auto mb-2 text-purple-400" />
+                <div className="text-2xl font-bold">{gridSize}x{gridSize}</div>
+                <div className="text-xs text-muted-foreground">Grid</div>
+              </CardContent>
+            </Card>
+            
+            <Card className="bg-card/50 backdrop-blur">
+              <CardContent className="p-4 text-center">
+                <Trophy className="w-6 h-6 mx-auto mb-2 text-yellow-400" />
+                <div className="text-2xl font-bold">
+                  {puzzleState.isComplete ? '100' : Math.round((puzzleState.pieces.filter(p => p.currentPosition === p.correctPosition).length / puzzleState.pieces.length) * 100)}%
+                </div>
+                <div className="text-xs text-muted-foreground">Complete</div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Game Controls */}
+          <div className="flex flex-wrap gap-3">
+            <Button variant="outline" onClick={shufflePieces} disabled={puzzleState.isComplete}>
+              <Shuffle className="w-4 h-4 mr-2" />
+              Shuffle
+            </Button>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowHint(!showHint)}
+              className={showHint ? "bg-yellow-500/20 border-yellow-500/40" : ""}
+            >
+              <HelpCircle className="w-4 h-4 mr-2" />
+              {showHint ? 'Hide Hint' : 'Show Hint'}
+            </Button>
+            <Button variant="outline" onClick={resetGame}>
+              <RotateCcw className="w-4 h-4 mr-2" />
+              New Game
+            </Button>
+          </div>
+
+          {/* Reference Image */}
+          {showHint && imagePreview && (
+            <Card className="bg-yellow-500/10 border-yellow-500/20">
+              <CardHeader>
+                <CardTitle className="text-sm text-yellow-400">Reference Image</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <img 
+                  src={imagePreview} 
+                  alt="Reference"
+                  className="w-48 h-48 object-contain rounded-lg bg-muted mx-auto"
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Puzzle Grid */}
+          <Card className="bg-card/50 backdrop-blur">
+            <CardContent className="p-6">
+              <div 
+                className="grid gap-1 mx-auto w-fit"
+                style={{ 
+                  gridTemplateColumns: `repeat(${gridSize}, minmax(0, 1fr))`,
+                  maxWidth: '500px'
+                }}
+              >
+                {Array.from({ length: gridSize * gridSize }, (_, index) => {
+                  const piece = getPieceAtPosition(index);
+                  return (
+                    <div
+                      key={index}
+                      className={cn(
+                        "aspect-square border-2 border-border/50 rounded-lg overflow-hidden transition-all duration-200",
+                        "hover:scale-105 hover:border-primary/50 cursor-pointer",
+                        draggedPiece === piece?.id && "opacity-50 scale-95",
+                        showHint && piece?.correctPosition === index && "ring-2 ring-green-500/50",
+                        showHint && piece?.correctPosition !== index && "ring-2 ring-red-500/50"
+                      )}
+                      style={{ width: '100px', height: '100px' }}
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => handleDrop(e, piece?.id || 0)}
+                    >
+                      {piece && (
+                        <img
+                          src={piece.imageData}
+                          alt={`Puzzle piece ${piece.id}`}
+                          className="w-full h-full object-cover"
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, piece.id)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Completion Alert */}
+          {puzzleState.isComplete && (
+            <Alert className="bg-green-500/10 border-green-500/20">
+              <CheckCircle className="h-4 w-4" />
+              <AlertDescription>
+                <strong>Congratulations!</strong> You completed the puzzle in {puzzleState.moves} moves 
+                and {formatTime(gameTimer)}! 🎉
+              </AlertDescription>
+            </Alert>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
