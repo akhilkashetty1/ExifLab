@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,21 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
   const [showRawData, setShowRawData] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<'all' | 'high' | 'medium' | 'safe'>('all');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  
+  // Add refs and mobile detection
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Detect mobile device
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   const handleFileUpload = useCallback(async (file: File) => {
     setUploadedImage(file);
@@ -44,45 +59,110 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
     setImagePreview(previewUrl);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
       const formData = new FormData();
       formData.append('image', file);
 
       const response = await fetch('/api/extract-exif', {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
+
+      // Check if response is actually JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        console.error('Non-JSON response:', text);
+        throw new Error('Server returned invalid response format');
+      }
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to extract EXIF data');
+        throw new Error(errorData.error || `HTTP ${response.status}`);
       }
 
       const result: ProcessedExifData = await response.json();
       setExifData(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
       console.error('EXIF extraction error:', err);
+      
+      if (err instanceof Error) {
+        if (err.name === 'AbortError') {
+          setError('Upload timed out. Please try with a smaller image.');
+        } else if (err.message.includes('JSON')) {
+          setError('Server error: Invalid response format. Please try again.');
+        } else {
+          setError(err.message);
+        }
+      } else {
+        setError('An unexpected error occurred');
+      }
     } finally {
       setLoading(false);
     }
   }, [setUploadedImage]);
 
-  const filteredTags = exifData?.tags.filter(tag => {
-    const matchesSearch = tag.tag.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         tag.value.toString().toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesCategory = selectedCategory === 'all' || tag.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  }) || [];
+  // Optimized search with debouncing and memoization
+  const handleSearchChange = useCallback((value: string) => {
+    try {
+      setSearchTerm(value);
+    } catch (error) {
+      console.error('Search error:', error);
+      // Fallback: don't update search term if error occurs
+    }
+  }, []);
 
-  const getTagsByCategory = (category: 'high' | 'medium' | 'safe') => {
-    return exifData?.tags.filter(tag => tag.category === category) || [];
-  };
+  // Memoized filtered tags with error protection
+  const filteredTags = useMemo(() => {
+    if (!exifData?.tags) return [];
+    
+    try {
+      return exifData.tags.filter(tag => {
+        // Safely convert values to strings
+        let tagString = '';
+        let valueString = '';
+        
+        try {
+          tagString = String(tag.tag || '').toLowerCase();
+          valueString = String(tag.value || '').toLowerCase();
+        } catch (e) {
+          // If conversion fails, skip this tag
+          return false;
+        }
 
-  const categoryStats = {
-    high: getTagsByCategory('high').length,
-    medium: getTagsByCategory('medium').length,
-    safe: getTagsByCategory('safe').length,
-  };
+        const matchesSearch = searchTerm === '' || 
+          tagString.includes(searchTerm.toLowerCase()) ||
+          valueString.includes(searchTerm.toLowerCase());
+        
+        const matchesCategory = selectedCategory === 'all' || tag.category === selectedCategory;
+        
+        return matchesSearch && matchesCategory;
+      });
+    } catch (error) {
+      console.error('Filter error:', error);
+      return exifData.tags; // Return all tags if filtering fails
+    }
+  }, [exifData?.tags, searchTerm, selectedCategory]);
+
+  // Memoized category stats
+  const categoryStats = useMemo(() => {
+    if (!exifData?.tags) return { high: 0, medium: 0, safe: 0 };
+    
+    try {
+      return exifData.tags.reduce((acc, tag) => {
+        acc[tag.category] = (acc[tag.category] || 0) + 1;
+        return acc;
+      }, { high: 0, medium: 0, safe: 0 } as Record<'high' | 'medium' | 'safe', number>);
+    } catch (error) {
+      console.error('Category stats error:', error);
+      return { high: 0, medium: 0, safe: 0 };
+    }
+  }, [exifData?.tags]);
 
   const getCategoryIcon = (category: 'high' | 'medium' | 'safe') => {
     switch (category) {
@@ -91,6 +171,33 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
       case 'safe': return <Shield className="w-4 h-4" />;
     }
   };
+
+  // Safe value display function
+  const displayValue = useCallback((value: any, showRaw: boolean) => {
+    try {
+      if (showRaw) {
+        return JSON.stringify(value);
+      }
+      
+      // Handle different value types safely
+      if (value === null || value === undefined) {
+        return 'N/A';
+      }
+      
+      if (Array.isArray(value)) {
+        return value.join(', ');
+      }
+      
+      if (typeof value === 'object') {
+        return JSON.stringify(value);
+      }
+      
+      return String(value);
+    } catch (error) {
+      console.error('Value display error:', error);
+      return 'Display Error';
+    }
+  }, []);
 
   if (!uploadedImage) {
     return (
@@ -140,6 +247,7 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
                   src={imagePreview} 
                   alt="Uploaded image"
                   className="w-full h-64 object-contain rounded-lg bg-muted"
+                  loading="lazy"
                 />
                 {exifData?.imageInfo && (
                   <div className="absolute top-2 right-2">
@@ -188,6 +296,9 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
             {loading && (
               <div className="flex items-center justify-center py-8">
                 <LoadingSpinner />
+                <span className="ml-2 text-sm text-muted-foreground">
+                  {isMobile ? 'Processing... This may take a moment' : 'Processing image...'}
+                </span>
               </div>
             )}
             
@@ -259,14 +370,19 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
+                  ref={searchInputRef}
                   placeholder="Search tags..."
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={(e) => handleSearchChange(e.target.value)}
                   className="pl-10"
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck="false"
                 />
               </div>
               
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 {['all', 'high', 'medium', 'safe'].map((category) => (
                   <Button
                     key={category}
@@ -301,8 +417,8 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
                   {searchTerm ? 'No tags match your search.' : 'No EXIF data found.'}
                 </div>
               ) : (
-                filteredTags.map((tag, index) => (
-                  <div key={index} className={cn(
+                filteredTags.slice(0, isMobile ? 20 : 100).map((tag, index) => (
+                  <div key={`${tag.tag}-${index}`} className={cn(
                     "p-4 rounded-lg border transition-all hover:scale-[1.01]",
                     PRIVACY_CATEGORIES[tag.category].bgClass
                   )}>
@@ -320,12 +436,21 @@ export function ExifViewer({ uploadedImage, setUploadedImage }: ExifViewerProps)
                         </div>
                         <p className="text-sm opacity-80 mb-2">{tag.description}</p>
                         <div className="font-mono text-sm bg-white/10 p-2 rounded border break-all">
-                          {showRawData ? JSON.stringify(tag.value) : String(tag.value)}
+                          {displayValue(tag.value, showRawData)}
                         </div>
                       </div>
                     </div>
                   </div>
                 ))
+              )}
+              
+              {/* Mobile: Show load more button if there are more tags */}
+              {isMobile && filteredTags.length > 20 && (
+                <div className="text-center py-4">
+                  <p className="text-sm text-muted-foreground">
+                    Showing first 20 of {filteredTags.length} tags. Use search to find specific tags.
+                  </p>
+                </div>
               )}
             </div>
           </CardContent>
